@@ -135,9 +135,10 @@ jobs:
           run_remote "
             cd /srv/recipes
             if [ ! -f .env ]; then
+              PG_PASS=\$(openssl rand -base64 24)
               echo 'DOMAIN=${DOMAIN}' > .env
               echo 'POSTGRES_USER=recipe' >> .env
-              echo 'POSTGRES_PASSWORD=\$(openssl rand -base64 24)' >> .env
+              echo \"POSTGRES_PASSWORD=\${PG_PASS}\" >> .env
               echo 'POSTGRES_DB=recipe_platform' >> .env
               echo '.env created'
             else
