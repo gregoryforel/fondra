@@ -10,12 +10,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Get server IP from Hetzner API
+      - name: Get server info from Hetzner API
         id: server
         env:
           HETZNER_API_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
         run: |
-          # Get the first server's IP
           RESPONSE=$(curl -s -H "Authorization: Bearer $HETZNER_API_TOKEN" \
             https://api.hetzner.cloud/v1/servers)
 
@@ -33,142 +32,188 @@ jobs:
           echo "server_ip=$SERVER_IP" >> "$GITHUB_OUTPUT"
           echo "server_id=$SERVER_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Rebuild server with cloud-init
+      - name: Reset root password via Hetzner API
+        id: password
         env:
           HETZNER_API_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
           SERVER_ID: ${{ steps.server.outputs.server_id }}
-          SERVER_IP: ${{ steps.server.outputs.server_ip }}
         run: |
+          echo "Resetting root password..."
+          HTTP_CODE=$(curl -s -o /tmp/reset_response.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer $HETZNER_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            "https://api.hetzner.cloud/v1/servers/$SERVER_ID/actions/reset_password")
+
+          if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: Password reset failed (HTTP $HTTP_CODE)"
+            cat /tmp/reset_response.json | jq .
+            echo ""
+            echo "This usually means the qemu-guest-agent isn't running."
+            echo "If this fails, add an SSH_PRIVATE_KEY secret instead."
+            exit 1
+          fi
+
+          ROOT_PASS=$(cat /tmp/reset_response.json | jq -r '.root_password')
+          echo "::add-mask::$ROOT_PASS"
+          echo "root_password=$ROOT_PASS" >> "$GITHUB_OUTPUT"
+          echo "Password reset successful."
+
+      - name: Wait for password reset to take effect
+        run: sleep 10
+
+      - name: Deploy to server via SSH
+        env:
+          SERVER_IP: ${{ steps.server.outputs.server_ip }}
+          ROOT_PASS: ${{ steps.password.outputs.root_password }}
+          REPO: ${{ github.repository }}
+        run: |
+          sudo apt-get install -y -qq sshpass
+
           DOMAIN="${{ secrets.DOMAIN }}"
-          # If no domain secret is set, use the server IP
           if [ -z "$DOMAIN" ]; then
             DOMAIN="$SERVER_IP"
           fi
 
-          echo "Rebuilding server $SERVER_ID with cloud-init..."
-          echo "Domain/IP: $DOMAIN"
+          # SSH options: skip host key check (first connection)
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
 
-          # Cloud-init user data
-          cat > /tmp/cloud-init.yml << 'CLOUDINIT'
-          #cloud-config
-          package_update: true
-          package_upgrade: true
-          packages:
-            - ca-certificates
-            - curl
-            - gnupg
-            - git
-            - ufw
-            - openssl
+          # Helper to run commands on the server
+          run_remote() {
+            sshpass -p "$ROOT_PASS" ssh $SSH_OPTS root@"$SERVER_IP" "$@"
+          }
 
-          runcmd:
-            # Install Docker
-            - install -m 0755 -d /etc/apt/keyrings
-            - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-            - chmod a+r /etc/apt/keyrings/docker.asc
-            - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
-            - apt-get update -qq
-            - apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-            # Firewall
-            - ufw allow 22/tcp
-            - ufw allow 80/tcp
-            - ufw allow 443/tcp
-            - ufw --force enable
-
-            # Clone and deploy
-            - mkdir -p /srv/recipes
-            - git clone https://github.com/REPO_PLACEHOLDER /srv/recipes
-            - cd /srv/recipes && echo "DOMAIN=DOMAIN_PLACEHOLDER" > .env
-            - cd /srv/recipes && echo "POSTGRES_USER=recipe" >> .env
-            - cd /srv/recipes && echo "POSTGRES_PASSWORD=$(openssl rand -base64 24)" >> .env
-            - cd /srv/recipes && echo "POSTGRES_DB=recipe_platform" >> .env
-            - cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml up -d --build
-
-            # Wait for app, then migrate + seed + compile
-            - sleep 30
-            - cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml exec -T app sh -c 'for f in /app/db/migrations/*_*.up.sql; do PGPASSWORD=$POSTGRES_PASSWORD psql -h postgres -U $POSTGRES_USER -d $POSTGRES_DB -f "$f" 2>&1 || true; done'
-            - cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml exec -T app sh -c 'for f in /app/db/seed/*.sql; do PGPASSWORD=$POSTGRES_PASSWORD psql -h postgres -U $POSTGRES_USER -d $POSTGRES_DB -f "$f" 2>&1 || true; done'
-            - cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml exec -T app /app/server compile-recipes || true
-          CLOUDINIT
-
-          # Replace placeholders
-          REPO="${{ github.repository }}"
-          sed -i "s|REPO_PLACEHOLDER|${REPO}.git|g" /tmp/cloud-init.yml
-          sed -i "s|DOMAIN_PLACEHOLDER|${DOMAIN}|g" /tmp/cloud-init.yml
-
-          cat /tmp/cloud-init.yml
-
-          # Rebuild the server via Hetzner API
-          USER_DATA=$(base64 -w 0 /tmp/cloud-init.yml)
-
-          HTTP_CODE=$(curl -s -o /tmp/rebuild_response.json -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $HETZNER_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"image\": \"ubuntu-24.04\", \"user_data\": \"$USER_DATA\"}" \
-            "https://api.hetzner.cloud/v1/servers/$SERVER_ID/rebuild")
-
-          echo "Hetzner API response (HTTP $HTTP_CODE):"
-          cat /tmp/rebuild_response.json | jq .
-
-          if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
-            echo "ERROR: Rebuild failed"
-            exit 1
-          fi
-
-          # Extract root password from rebuild response
-          ROOT_PASS=$(cat /tmp/rebuild_response.json | jq -r '.root_password // empty')
-          if [ -n "$ROOT_PASS" ]; then
-            echo "::notice::Root password has been reset. Check the workflow log."
-            echo "Root password: $ROOT_PASS"
-          fi
+          echo "=== Testing SSH connection ==="
+          run_remote "echo 'Connected to server successfully!'"
 
           echo ""
-          echo "=========================================="
-          echo "  Server is rebuilding!"
-          echo "  IP: $SERVER_IP"
-          echo "  This takes ~5 minutes."
-          echo "=========================================="
+          echo "=== Installing packages ==="
+          run_remote "export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq ca-certificates curl gnupg git ufw openssl"
 
-      - name: Wait for server to come back
-        env:
-          SERVER_IP: ${{ steps.server.outputs.server_ip }}
-        run: |
-          echo "Waiting for server to accept connections..."
-          for i in $(seq 1 60); do
-            if nc -z -w 2 "$SERVER_IP" 22 2>/dev/null; then
-              echo "Server is back online (SSH responding)!"
-              break
+          echo ""
+          echo "=== Installing Docker ==="
+          run_remote "
+            if command -v docker &>/dev/null; then
+              echo 'Docker already installed, skipping.'
+            else
+              install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+              chmod a+r /etc/apt/keyrings/docker.asc
+              echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \$(. /etc/os-release && echo \$VERSION_CODENAME) stable\" > /etc/apt/sources.list.d/docker.list
+              apt-get update -qq
+              apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
             fi
-            echo "  Attempt $i/60 — waiting..."
-            sleep 10
-          done
+            docker --version
+          "
 
-      - name: Wait for deployment to complete
+          echo ""
+          echo "=== Configuring firewall ==="
+          run_remote "
+            ufw allow 22/tcp
+            ufw allow 80/tcp
+            ufw allow 443/tcp
+            echo y | ufw enable || true
+            ufw status
+          "
+
+          echo ""
+          echo "=== Cloning repository ==="
+          run_remote "
+            if [ -d /srv/recipes/.git ]; then
+              echo 'Repo exists, pulling latest...'
+              cd /srv/recipes && git pull origin main || git pull
+            else
+              rm -rf /srv/recipes
+              git clone https://github.com/${REPO}.git /srv/recipes
+            fi
+          "
+
+          echo ""
+          echo "=== Creating .env file ==="
+          run_remote "
+            cd /srv/recipes
+            if [ ! -f .env ]; then
+              echo 'DOMAIN=${DOMAIN}' > .env
+              echo 'POSTGRES_USER=recipe' >> .env
+              echo 'POSTGRES_PASSWORD=\$(openssl rand -base64 24)' >> .env
+              echo 'POSTGRES_DB=recipe_platform' >> .env
+              echo '.env created'
+            else
+              echo '.env already exists, keeping it'
+              # Update domain in case it changed
+              sed -i \"s|^DOMAIN=.*|DOMAIN=${DOMAIN}|\" .env
+            fi
+            cat .env
+          "
+
+          echo ""
+          echo "=== Starting containers ==="
+          run_remote "
+            cd /srv/recipes
+            docker compose -f deploy/docker-compose.prod.yml up -d --build
+          "
+
+          echo ""
+          echo "=== Waiting for containers to be ready ==="
+          sleep 20
+
+          echo ""
+          echo "=== Running migrations ==="
+          run_remote "
+            cd /srv/recipes
+            docker compose -f deploy/docker-compose.prod.yml exec -T app sh -c '
+              for f in /app/db/migrations/*_*.up.sql; do
+                echo \"Running: \$f\"
+                PGPASSWORD=\$POSTGRES_PASSWORD psql -h postgres -U \$POSTGRES_USER -d \$POSTGRES_DB -f \"\$f\" 2>&1 || true
+              done
+            '
+          "
+
+          echo ""
+          echo "=== Loading seed data ==="
+          run_remote "
+            cd /srv/recipes
+            docker compose -f deploy/docker-compose.prod.yml exec -T app sh -c '
+              for f in /app/db/seed/*.sql; do
+                echo \"Seeding: \$f\"
+                PGPASSWORD=\$POSTGRES_PASSWORD psql -h postgres -U \$POSTGRES_USER -d \$POSTGRES_DB -f \"\$f\" 2>&1 || true
+              done
+            '
+          "
+
+          echo ""
+          echo "=== Compiling recipes ==="
+          run_remote "
+            cd /srv/recipes
+            docker compose -f deploy/docker-compose.prod.yml exec -T app /app/server compile-recipes || true
+          "
+
+          echo ""
+          echo "=== Checking container status ==="
+          run_remote "cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml ps"
+
+      - name: Health check
         env:
           SERVER_IP: ${{ steps.server.outputs.server_ip }}
-          DOMAIN: ${{ secrets.DOMAIN }}
         run: |
+          DOMAIN="${{ secrets.DOMAIN }}"
           TARGET="${DOMAIN:-$SERVER_IP}"
-          echo "Waiting for app health check at http://$TARGET/health ..."
-          echo "(cloud-init takes a few minutes to install Docker and build the app)"
 
-          for i in $(seq 1 60); do
+          echo "Checking http://$TARGET/health ..."
+          for i in $(seq 1 20); do
             RESPONSE=$(curl -sk -o /dev/null -w "%{http_code}" "http://$TARGET/health" 2>/dev/null || true)
             if [ "$RESPONSE" = "200" ]; then
               echo ""
               echo "=========================================="
               echo "  DEPLOYMENT SUCCESSFUL!"
               echo "  Your site is live at: http://$TARGET"
-              echo "  Health check: http://$TARGET/health"
               echo "=========================================="
               exit 0
             fi
-            echo "  Attempt $i/60 (HTTP $RESPONSE) — waiting..."
-            sleep 15
+            echo "  Attempt $i/20 (HTTP $RESPONSE) — waiting..."
+            sleep 5
           done
 
           echo ""
-          echo "Health check didn't pass yet, but the server may still be building."
-          echo "Cloud-init can take up to 10 minutes. Check: http://$TARGET/health"
+          echo "Health check didn't return 200 yet."
+          echo "The app may still be starting. Try: http://$TARGET"
