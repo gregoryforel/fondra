@@ -1,7 +1,7 @@
 .PHONY: up down migrate seed sqlc templ test compile-recipes dev build clean \
        deploy-build deploy-up deploy-down deploy-logs deploy-ps
 
-DATABASE_URL ?= postgres://recipe:recipe@localhost:5432/recipe_platform?sslmode=disable
+DATABASE_URL ?= postgres://recipe:recipe@localhost:5433/recipe_platform?sslmode=disable
 
 # Docker compose
 up:

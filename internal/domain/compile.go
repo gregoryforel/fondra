@@ -268,13 +268,17 @@ func resolveGroceryList(ctx context.Context, tx pgx.Tx, recipeID string) ([]Groc
 		if err != nil {
 			return nil, err
 		}
+		items = append(items, item)
+	}
+	rows.Close()
 
-		// Get allergens for this ingredient
+	// Fetch allergens in a separate loop to avoid "conn busy"
+	for i := range items {
 		allergenRows, err := tx.Query(ctx, `
 			SELECT a.name FROM ingredient_allergens ia
 			JOIN allergens a ON a.id = ia.allergen_id
 			WHERE ia.ingredient_id = $1 AND ia.severity = 'contains'
-		`, item.IngredientID)
+		`, items[i].IngredientID)
 		if err != nil {
 			return nil, err
 		}
@@ -284,12 +288,11 @@ func resolveGroceryList(ctx context.Context, tx pgx.Tx, recipeID string) ([]Groc
 				allergenRows.Close()
 				return nil, err
 			}
-			item.Allergens = append(item.Allergens, name)
+			items[i].Allergens = append(items[i].Allergens, name)
 		}
 		allergenRows.Close()
-
-		items = append(items, item)
 	}
+
 	if items == nil {
 		items = []GroceryItem{}
 	}
