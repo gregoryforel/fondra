@@ -4,9 +4,30 @@ name: Setup Hetzner Server
 on:
   workflow_dispatch:
 
+env:
+  IMAGE: ghcr.io/gregoryforel/foodies
+
 jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push image
+        run: |
+          docker build -t $IMAGE:latest -t $IMAGE:${{ github.sha }} -f docker/Dockerfile .
+          docker push $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
+
   setup:
     runs-on: ubuntu-latest
+    needs: build-image
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +89,7 @@ jobs:
           ROOT_PASS: ${{ steps.password.outputs.root_password }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
         run: |
           sudo apt-get install -y -qq sshpass
 
@@ -150,11 +172,16 @@ jobs:
           "
 
           echo ""
-          echo "=== Starting containers ==="
+          echo "=== Logging into GHCR ==="
+          run_remote "echo '${GHCR_PAT}' | docker login ghcr.io -u gregoryforel --password-stdin"
+
+          echo ""
+          echo "=== Pulling and starting containers ==="
           run_remote "
             cd /srv/recipes
-            docker compose -f deploy/docker-compose.prod.yml --env-file .env down -v --remove-orphans 2>/dev/null || true
-            docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build || true
+            docker compose -f deploy/docker-compose.prod.yml --env-file .env down --remove-orphans 2>/dev/null || true
+            docker compose -f deploy/docker-compose.prod.yml --env-file .env pull
+            docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d
           "
 
           echo ""

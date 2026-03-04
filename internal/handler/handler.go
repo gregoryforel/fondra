@@ -40,14 +40,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 }
 
-// HandleHealth returns 200 if the app and database are reachable.
+// HandleHealth returns 200 if the process is alive.
+// This is intentionally independent of database state so the container
+// healthcheck passes while the DB is still starting up.
 func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
-	if err := h.DB.Ping(r.Context()); err != nil {
-		h.Logger.Error("health check failed", "error", err)
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unhealthy", "error": "database unreachable"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // HandleHome renders the home page with featured recipes.
