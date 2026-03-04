@@ -29,7 +29,9 @@ WORKDIR /app
 COPY --from=builder /bin/server /app/server
 COPY --from=builder /app/web/static /app/web/static
 COPY --from=builder /app/db /app/db
+COPY docker/entrypoint.sh /app/entrypoint.sh
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
 
-ENTRYPOINT ["/app/server"]
+ENTRYPOINT ["/app/entrypoint.sh"]
