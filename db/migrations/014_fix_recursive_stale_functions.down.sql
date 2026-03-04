@@ -1,0 +1,3 @@
+-- Migration 014 down: no-op.
+-- This migration only corrects function bodies from migration 011.
+-- Rolling back would reintroduce broken trigger behavior.

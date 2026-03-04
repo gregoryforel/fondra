@@ -730,3 +730,13 @@ func CompileAllRecipes(ctx context.Context, pool *pgxpool.Pool, staleOnly bool) 
 	}
 	return nil
 }
+
+// ProcessRecipeClosureRebuildQueue processes one queued closure rebuild request.
+// Returns true when work was performed.
+func ProcessRecipeClosureRebuildQueue(ctx context.Context, pool *pgxpool.Pool) (bool, error) {
+	var didWork bool
+	if err := pool.QueryRow(ctx, "SELECT process_recipe_closure_rebuild_queue()").Scan(&didWork); err != nil {
+		return false, fmt.Errorf("process recipe closure rebuild queue: %w", err)
+	}
+	return didWork, nil
+}

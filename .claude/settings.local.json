@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where bash:*)",
+      "Bash(make:*)",
+      "Bash(ls:*)",
+      "Bash(go install:*)",
+      "Bash(templ generate:*)",
+      "Bash(rm:*)",
+      "Bash(sqlc generate:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Skill(commit-commands:commit)"
+    ]
+  }
+}

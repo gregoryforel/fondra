@@ -55,7 +55,13 @@ func main() {
 	}
 
 	// For server mode, retry DB connection in background
-	go waitForDB(ctx, pool, logger)
+	go func() {
+		if err := waitForDB(ctx, pool, logger); err != nil {
+			logger.Error("database not ready", "error", err)
+			return
+		}
+		startMaintenanceLoop(ctx, pool, logger)
+	}()
 
 	h := handler.New(pool, logger)
 	mux := http.NewServeMux()
@@ -110,4 +116,26 @@ func waitForDB(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) err
 		}
 	}
 	return fmt.Errorf("database not ready after 60 seconds")
+}
+
+// startMaintenanceLoop runs low-priority background maintenance jobs.
+func startMaintenanceLoop(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			didWork, err := domain.ProcessRecipeClosureRebuildQueue(ctx, pool)
+			if err != nil {
+				logger.Warn("closure rebuild queue processing failed", "error", err)
+				continue
+			}
+			if didWork {
+				logger.Info("processed queued recipe closure rebuild")
+			}
+		}
+	}
 }
