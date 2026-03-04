@@ -53,57 +53,33 @@ jobs:
           echo "server_ip=$SERVER_IP" >> "$GITHUB_OUTPUT"
           echo "server_id=$SERVER_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Reset root password via Hetzner API
-        id: password
+      - name: Setup SSH key
         env:
-          HETZNER_API_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
-          SERVER_ID: ${{ steps.server.outputs.server_id }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          echo "Resetting root password..."
-          HTTP_CODE=$(curl -s -o /tmp/reset_response.json -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $HETZNER_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            "https://api.hetzner.cloud/v1/servers/$SERVER_ID/actions/reset_password")
-
-          if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then
-            echo "ERROR: Password reset failed (HTTP $HTTP_CODE)"
-            cat /tmp/reset_response.json | jq .
-            echo ""
-            echo "This usually means the qemu-guest-agent isn't running."
-            echo "If this fails, add an SSH_PRIVATE_KEY secret instead."
-            exit 1
-          fi
-
-          ROOT_PASS=$(cat /tmp/reset_response.json | jq -r '.root_password')
-          echo "::add-mask::$ROOT_PASS"
-          echo "root_password=$ROOT_PASS" >> "$GITHUB_OUTPUT"
-          echo "Password reset successful."
-
-      - name: Wait for password reset to take effect
-        run: sleep 10
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ steps.server.outputs.server_ip }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy to server via SSH
         env:
           SERVER_IP: ${{ steps.server.outputs.server_ip }}
-          ROOT_PASS: ${{ steps.password.outputs.root_password }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
         run: |
-          sudo apt-get install -y -qq sshpass
-
           DOMAIN="${{ secrets.DOMAIN }}"
           if [ -z "$DOMAIN" ]; then
             DOMAIN="$SERVER_IP"
           fi
 
-          # SSH options: skip host key check (first connection)
+          # SSH options
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
 
           # Helper to run commands on the server
           run_remote() {
-            sshpass -p "$ROOT_PASS" ssh $SSH_OPTS root@"$SERVER_IP" "$@"
+            ssh $SSH_OPTS root@"$SERVER_IP" "$@"
           }
 
           echo "=== Testing SSH connection ==="
