@@ -161,7 +161,7 @@ VALUES
     ((SELECT id FROM recipe_steps WHERE recipe_id = (SELECT id FROM recipes WHERE slug = 'beef-wellington') AND position = 3),
      1, NULL, (SELECT id FROM recipes WHERE slug = 'classic-puff-pastry'), 1, (SELECT id FROM units WHERE name = 'piece')),
     ((SELECT id FROM recipe_steps WHERE recipe_id = (SELECT id FROM recipes WHERE slug = 'beef-wellington') AND position = 3),
-     2, (SELECT id FROM ingredients WHERE name_slug = 'eggs-whole-raw'), 1, (SELECT id FROM units WHERE name = 'piece'));
+     2, (SELECT id FROM ingredients WHERE name_slug = 'eggs-whole-raw'), NULL, 1, (SELECT id FROM units WHERE name = 'piece'));
 
 -- Step 4: Bake
 INSERT INTO recipe_steps (recipe_id, position, instruction, active_seconds, passive_seconds)
