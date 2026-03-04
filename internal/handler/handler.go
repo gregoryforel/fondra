@@ -193,6 +193,7 @@ func (h *Handler) listCompiledRecipes(ctx context.Context, limit, offset int, qu
 			compiledAllergens, compiledDietFlags                  []string
 			totalActiveSec, totalPassiveSec                       int
 			totalCalPerServing                                    *float64
+			compiledTags                                          []string
 			title, slug                                           string
 			description                                           *string
 			servings                                              int
@@ -203,6 +204,7 @@ func (h *Handler) listCompiledRecipes(ctx context.Context, limit, offset int, qu
 			&compiledNutritionPerServing, &compiledNutritionTotal,
 			&compiledAllergens, &compiledDietFlags,
 			&totalActiveSec, &totalPassiveSec, &totalCalPerServing,
+			&compiledTags,
 			&title, &slug, &description, &servings,
 		)
 		if err != nil {
@@ -227,6 +229,7 @@ func (h *Handler) listCompiledRecipes(ctx context.Context, limit, offset int, qu
 			CaloriesPerServing:  cal,
 			DietFlags:           compiledDietFlags,
 			Allergens:           compiledAllergens,
+			Tags:                compiledTags,
 			Servings:            servings,
 		})
 	}
@@ -247,13 +250,16 @@ func (h *Handler) getRecipeDetail(ctx context.Context, slug, unitSystem string) 
 		compiledAllergens, compiledDietFlags                  []string
 		totalActiveSec, totalPassiveSec                       int
 		totalCalPerServing                                    *float64
+		compiledTags                                          []string
 		title, rSlug                                          string
 		description                                           *string
 		servings                                              int
+		yieldAmount                                           *float64
+		yieldUnitID                                           *string
 	)
 
 	err := h.DB.QueryRow(ctx, `
-		SELECT cr.*, r.title, r.slug, r.description, r.servings
+		SELECT cr.*, r.title, r.slug, r.description, r.servings, r.yield_amount, r.yield_unit_id
 		FROM compiled_recipes cr
 		JOIN recipes r ON r.id = cr.recipe_id
 		WHERE r.slug = $1
@@ -263,7 +269,8 @@ func (h *Handler) getRecipeDetail(ctx context.Context, slug, unitSystem string) 
 		&compiledNutritionPerServingJSON, &compiledNutritionTotalJSON,
 		&compiledAllergens, &compiledDietFlags,
 		&totalActiveSec, &totalPassiveSec, &totalCalPerServing,
-		&title, &rSlug, &description, &servings,
+		&compiledTags,
+		&title, &rSlug, &description, &servings, &yieldAmount, &yieldUnitID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query compiled recipe: %w", err)
@@ -352,11 +359,29 @@ func (h *Handler) getRecipeDetail(ctx context.Context, slug, unitSystem string) 
 		desc = *description
 	}
 
+	// Build yield description
+	var yieldDesc string
+	if yieldAmount != nil && *yieldAmount > 0 {
+		// Look up yield unit name if we have a unit ID
+		if yieldUnitID != nil {
+			var unitName string
+			err := h.DB.QueryRow(ctx, "SELECT name FROM units WHERE id = $1", *yieldUnitID).Scan(&unitName)
+			if err == nil {
+				yieldDesc = fmt.Sprintf("%.0f %s", *yieldAmount, unitName)
+			} else {
+				yieldDesc = fmt.Sprintf("%.0f", *yieldAmount)
+			}
+		} else {
+			yieldDesc = fmt.Sprintf("%.0f", *yieldAmount)
+		}
+	}
+
 	return &templates.RecipeDetailData{
 		Title:               title,
 		Slug:                rSlug,
 		Description:         desc,
 		Servings:            servings,
+		YieldDescription:    yieldDesc,
 		TotalActiveMinutes:  totalActiveSec / 60,
 		TotalPassiveMinutes: totalPassiveSec / 60,
 		Steps:               steps,
@@ -374,6 +399,7 @@ func (h *Handler) getRecipeDetail(ctx context.Context, slug, unitSystem string) 
 		},
 		DietFlags:  compiledDietFlags,
 		Allergens:  compiledAllergens,
+		Tags:       compiledTags,
 		UnitSystem: unitSystem,
 	}, nil
 }
@@ -416,7 +442,8 @@ func (h *Handler) listCompiledRecipesJSON(ctx context.Context, limit, offset int
 	if query != "" {
 		sqlStr = `
 			SELECT cr.recipe_id, r.title, r.slug, r.description, r.servings,
-			       cr.compiled_allergens, cr.compiled_diet_flags,
+			       r.yield_amount, r.yield_unit_id,
+			       cr.compiled_allergens, cr.compiled_diet_flags, cr.compiled_tags,
 			       cr.total_active_seconds, cr.total_passive_seconds,
 			       cr.total_calories_per_serving,
 			       cr.compiled_nutrition_per_serving
@@ -429,7 +456,8 @@ func (h *Handler) listCompiledRecipesJSON(ctx context.Context, limit, offset int
 	} else {
 		sqlStr = `
 			SELECT cr.recipe_id, r.title, r.slug, r.description, r.servings,
-			       cr.compiled_allergens, cr.compiled_diet_flags,
+			       r.yield_amount, r.yield_unit_id,
+			       cr.compiled_allergens, cr.compiled_diet_flags, cr.compiled_tags,
 			       cr.total_active_seconds, cr.total_passive_seconds,
 			       cr.total_calories_per_serving,
 			       cr.compiled_nutrition_per_serving
@@ -449,16 +477,19 @@ func (h *Handler) listCompiledRecipesJSON(ctx context.Context, limit, offset int
 	var recipes []map[string]any
 	for rows.Next() {
 		var (
-			id, title, slug    string
-			description        *string
-			servings           int
-			allergens, diets   []string
+			id, title, slug       string
+			description           *string
+			servings              int
+			yieldAmount           *float64
+			yieldUnitID           *string
+			allergens, diets, tags []string
 			activeSec, passiveSec int
-			calPerServing      *float64
-			nutritionJSON      json.RawMessage
+			calPerServing         *float64
+			nutritionJSON         json.RawMessage
 		)
 		err := rows.Scan(&id, &title, &slug, &description, &servings,
-			&allergens, &diets, &activeSec, &passiveSec, &calPerServing, &nutritionJSON)
+			&yieldAmount, &yieldUnitID,
+			&allergens, &diets, &tags, &activeSec, &passiveSec, &calPerServing, &nutritionJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -470,11 +501,18 @@ func (h *Handler) listCompiledRecipesJSON(ctx context.Context, limit, offset int
 			"servings":               servings,
 			"allergens":              allergens,
 			"diet_flags":             diets,
+			"tags":                   tags,
 			"total_active_seconds":   activeSec,
 			"total_passive_seconds":  passiveSec,
 		}
 		if description != nil {
 			recipe["description"] = *description
+		}
+		if yieldAmount != nil {
+			recipe["yield_amount"] = *yieldAmount
+		}
+		if yieldUnitID != nil {
+			recipe["yield_unit_id"] = *yieldUnitID
 		}
 		if calPerServing != nil {
 			recipe["calories_per_serving"] = *calPerServing
@@ -497,28 +535,32 @@ func (h *Handler) getCompiledRecipeJSON(ctx context.Context, slug string) (map[s
 		id                                    string
 		compiledSteps, compiledGrocery        json.RawMessage
 		nutritionPerServing, nutritionTotal   json.RawMessage
-		allergens, diets                      []string
+		allergens, diets, tags                []string
 		activeSec, passiveSec                 int
 		calPerServing                         *float64
 		title, rSlug                          string
 		description                           *string
 		servings                              int
+		yieldAmount                           *float64
+		yieldUnitID                           *string
 	)
 
 	err := h.DB.QueryRow(ctx, `
 		SELECT cr.recipe_id, r.title, r.slug, r.description, r.servings,
+		       r.yield_amount, r.yield_unit_id,
 		       cr.compiled_steps, cr.compiled_grocery_list,
 		       cr.compiled_nutrition_per_serving, cr.compiled_nutrition_total,
-		       cr.compiled_allergens, cr.compiled_diet_flags,
+		       cr.compiled_allergens, cr.compiled_diet_flags, cr.compiled_tags,
 		       cr.total_active_seconds, cr.total_passive_seconds,
 		       cr.total_calories_per_serving
 		FROM compiled_recipes cr
 		JOIN recipes r ON r.id = cr.recipe_id
 		WHERE r.slug = $1
 	`, slug).Scan(&id, &title, &rSlug, &description, &servings,
+		&yieldAmount, &yieldUnitID,
 		&compiledSteps, &compiledGrocery,
 		&nutritionPerServing, &nutritionTotal,
-		&allergens, &diets,
+		&allergens, &diets, &tags,
 		&activeSec, &passiveSec, &calPerServing)
 	if err != nil {
 		return nil, err
@@ -531,11 +573,18 @@ func (h *Handler) getCompiledRecipeJSON(ctx context.Context, slug string) (map[s
 		"servings":               servings,
 		"allergens":              allergens,
 		"diet_flags":             diets,
+		"tags":                   tags,
 		"total_active_seconds":   activeSec,
 		"total_passive_seconds":  passiveSec,
 	}
 	if description != nil {
 		recipe["description"] = *description
+	}
+	if yieldAmount != nil {
+		recipe["yield_amount"] = *yieldAmount
+	}
+	if yieldUnitID != nil {
+		recipe["yield_unit_id"] = *yieldUnitID
 	}
 	if calPerServing != nil {
 		recipe["calories_per_serving"] = *calPerServing

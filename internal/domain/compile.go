@@ -40,17 +40,17 @@ type GroceryItem struct {
 
 // NutritionInfo holds nutrition data.
 type NutritionInfo struct {
-	Calories     float64            `json:"calories"`
-	ProteinG     float64            `json:"protein_g"`
-	FatG         float64            `json:"fat_g"`
-	SaturatedG   float64            `json:"saturated_fat_g"`
-	CarbsG       float64            `json:"carbs_g"`
-	FiberG       float64            `json:"fiber_g"`
-	SugarG       float64            `json:"sugar_g"`
-	SodiumMg     float64            `json:"sodium_mg"`
-	CholesterolMg float64           `json:"cholesterol_mg"`
-	Vitamins     map[string]float64 `json:"vitamins,omitempty"`
-	Minerals     map[string]float64 `json:"minerals,omitempty"`
+	Calories      float64            `json:"calories"`
+	ProteinG      float64            `json:"protein_g"`
+	FatG          float64            `json:"fat_g"`
+	SaturatedG    float64            `json:"saturated_fat_g"`
+	CarbsG        float64            `json:"carbs_g"`
+	FiberG        float64            `json:"fiber_g"`
+	SugarG        float64            `json:"sugar_g"`
+	SodiumMg      float64            `json:"sodium_mg"`
+	CholesterolMg float64            `json:"cholesterol_mg"`
+	Vitamins      map[string]float64 `json:"vitamins,omitempty"`
+	Minerals      map[string]float64 `json:"minerals,omitempty"`
 }
 
 // CompileRecipe resolves the sub-recipe DAG and compiles all data into compiled_recipes.
@@ -95,14 +95,20 @@ func CompileRecipe(ctx context.Context, pool *pgxpool.Pool, recipeID string) err
 		return fmt.Errorf("collect diet flags: %w", err)
 	}
 
-	// 6. Sum timing
+	// 6. Collect tags
+	tags, err := collectTags(ctx, tx, recipeID)
+	if err != nil {
+		return fmt.Errorf("collect tags: %w", err)
+	}
+
+	// 7. Sum timing
 	totalActive, totalPassive := sumTiming(compiledSteps)
 
-	// 7. Nutrition rollup (stub)
+	// 8. Nutrition rollup
 	nutritionTotal := computeNutrition(ctx, tx, groceryList)
 	nutritionPerServing := scaleNutrition(nutritionTotal, servings)
 
-	// 8. Write to compiled_recipes
+	// 9. Write to compiled_recipes
 	stepsJSON, _ := json.Marshal(compiledSteps)
 	groceryJSON, _ := json.Marshal(groceryList)
 	nutritionPerServingJSON, _ := json.Marshal(nutritionPerServing)
@@ -114,8 +120,9 @@ func CompileRecipe(ctx context.Context, pool *pgxpool.Pool, recipeID string) err
 			compiled_steps, compiled_grocery_list,
 			compiled_nutrition_per_serving, compiled_nutrition_total,
 			compiled_allergens, compiled_diet_flags,
-			total_active_seconds, total_passive_seconds, total_calories_per_serving
-		) VALUES ($1, now(), false, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			total_active_seconds, total_passive_seconds, total_calories_per_serving,
+			compiled_tags
+		) VALUES ($1, now(), false, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (recipe_id) DO UPDATE SET
 			compiled_at = now(),
 			is_stale = false,
@@ -127,11 +134,13 @@ func CompileRecipe(ctx context.Context, pool *pgxpool.Pool, recipeID string) err
 			compiled_diet_flags = EXCLUDED.compiled_diet_flags,
 			total_active_seconds = EXCLUDED.total_active_seconds,
 			total_passive_seconds = EXCLUDED.total_passive_seconds,
-			total_calories_per_serving = EXCLUDED.total_calories_per_serving
+			total_calories_per_serving = EXCLUDED.total_calories_per_serving,
+			compiled_tags = EXCLUDED.compiled_tags
 	`, recipeID, stepsJSON, groceryJSON,
 		nutritionPerServingJSON, nutritionTotalJSON,
 		allergens, dietFlags,
-		totalActive, totalPassive, nutritionPerServing.Calories)
+		totalActive, totalPassive, nutritionPerServing.Calories,
+		tags)
 	if err != nil {
 		return fmt.Errorf("upsert compiled recipe: %w", err)
 	}
@@ -237,23 +246,45 @@ func resolveGroceryList(ctx context.Context, tx pgx.Tx, recipeID string) ([]Groc
 				rsc.sub_recipe_id,
 				rsc.quantity,
 				rsc.unit_id,
-				rt.multiplier * (rt.quantity / NULLIF(r.servings, 0))
+				rt.multiplier * (rt.quantity / NULLIF(COALESCE(r.yield_amount, r.servings::numeric), 0))
 			FROM recipe_tree rt
 			JOIN recipes r ON r.id = rt.sub_recipe_id
 			JOIN recipe_steps rs ON rs.recipe_id = r.id
 			JOIN recipe_step_components rsc ON rsc.step_id = rs.id
 			WHERE rt.sub_recipe_id IS NOT NULL
+		),
+		normalized AS (
+			SELECT
+				rt.ingredient_id,
+				COALESCE(i.default_unit_id, rt.unit_id) AS unit_id,
+				CASE
+					WHEN rt.unit_id = COALESCE(i.default_unit_id, rt.unit_id) THEN
+						rt.quantity * rt.multiplier
+					WHEN su.dimension = du.dimension THEN
+						rt.quantity * rt.multiplier * su.to_base_factor / NULLIF(du.to_base_factor, 0)
+					WHEN su.dimension = 'volume' AND du.dimension = 'mass' AND id_dens.density_g_per_ml IS NOT NULL THEN
+						rt.quantity * rt.multiplier * su.to_base_factor * id_dens.density_g_per_ml / NULLIF(du.to_base_factor, 0)
+					WHEN su.dimension = 'mass' AND du.dimension = 'volume' AND id_dens.density_g_per_ml IS NOT NULL THEN
+						rt.quantity * rt.multiplier * su.to_base_factor / id_dens.density_g_per_ml / NULLIF(du.to_base_factor, 0)
+					ELSE
+						rt.quantity * rt.multiplier
+				END AS converted_quantity
+			FROM recipe_tree rt
+			JOIN ingredients i ON i.id = rt.ingredient_id
+			JOIN units su ON su.id = rt.unit_id
+			LEFT JOIN units du ON du.id = i.default_unit_id
+			LEFT JOIN ingredient_densities id_dens ON id_dens.ingredient_id = rt.ingredient_id AND id_dens.notes IS NULL
+			WHERE rt.ingredient_id IS NOT NULL
 		)
 		SELECT
-			rt.ingredient_id,
+			n.ingredient_id,
 			i.name,
 			u.name AS unit_name,
-			SUM(rt.quantity * rt.multiplier) AS total_quantity
-		FROM recipe_tree rt
-		JOIN ingredients i ON i.id = rt.ingredient_id
-		JOIN units u ON u.id = rt.unit_id
-		WHERE rt.ingredient_id IS NOT NULL
-		GROUP BY rt.ingredient_id, i.name, u.name, rt.unit_id
+			SUM(n.converted_quantity) AS total_quantity
+		FROM normalized n
+		JOIN ingredients i ON i.id = n.ingredient_id
+		JOIN units u ON u.id = n.unit_id
+		GROUP BY n.ingredient_id, i.name, n.unit_id, u.name
 		ORDER BY i.name
 	`, recipeID)
 	if err != nil {
@@ -308,7 +339,7 @@ func collectAllergens(ctx context.Context, tx pgx.Tx, recipeID string) ([]string
 			WHERE rs.recipe_id = $1
 			UNION ALL
 			SELECT rsc.ingredient_id, rsc.sub_recipe_id,
-				   rt.multiplier * (rt.quantity / NULLIF(r.servings, 0)),
+				   rt.multiplier * (rt.quantity / NULLIF(COALESCE(r.yield_amount, r.servings::numeric), 0)),
 				   rsc.quantity
 			FROM recipe_tree rt
 			JOIN recipes r ON r.id = rt.sub_recipe_id
@@ -350,7 +381,7 @@ func collectDietFlags(ctx context.Context, tx pgx.Tx, recipeID string) ([]string
 			WHERE rs.recipe_id = $1
 			UNION ALL
 			SELECT rsc.ingredient_id, rsc.sub_recipe_id,
-				   rt.multiplier * (rt.quantity / NULLIF(r.servings, 0)),
+				   rt.multiplier * (rt.quantity / NULLIF(COALESCE(r.yield_amount, r.servings::numeric), 0)),
 				   rsc.quantity
 			FROM recipe_tree rt
 			JOIN recipes r ON r.id = rt.sub_recipe_id
@@ -363,10 +394,13 @@ func collectDietFlags(ctx context.Context, tx pgx.Tx, recipeID string) ([]string
 		WHERE NOT EXISTS (
 			SELECT 1
 			FROM recipe_tree rt
-			JOIN ingredient_diet_flags idf ON idf.ingredient_id = rt.ingredient_id
-										  AND idf.diet_flag_id = df.id
 			WHERE rt.ingredient_id IS NOT NULL
-			  AND idf.compatible = false
+			AND NOT EXISTS (
+				SELECT 1 FROM ingredient_diet_flags idf
+				WHERE idf.ingredient_id = rt.ingredient_id
+				AND idf.diet_flag_id = df.id
+				AND idf.compatible = true
+			)
 		)
 		AND EXISTS (
 			SELECT 1
@@ -391,6 +425,33 @@ func collectDietFlags(ctx context.Context, tx pgx.Tx, recipeID string) ([]string
 		flags = []string{}
 	}
 	return flags, nil
+}
+
+func collectTags(ctx context.Context, tx pgx.Tx, recipeID string) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT t.name
+		FROM recipe_tags rtag
+		JOIN tags t ON t.id = rtag.tag_id
+		WHERE rtag.recipe_id = $1
+		ORDER BY t.category, t.name
+	`, recipeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		tags = append(tags, name)
+	}
+	if tags == nil {
+		tags = []string{}
+	}
+	return tags, nil
 }
 
 func sumTiming(steps []CompiledStep) (int, int) {
@@ -497,9 +558,17 @@ func scaleNutrition(total NutritionInfo, servings int) NutritionInfo {
 	return scaled
 }
 
-// CompileAllRecipes compiles all recipes in the database.
-func CompileAllRecipes(ctx context.Context, pool *pgxpool.Pool) error {
-	rows, err := pool.Query(ctx, "SELECT id FROM recipes ORDER BY created_at")
+// CompileAllRecipes compiles recipes in the database.
+// If staleOnly is true, only recipes marked as stale are recompiled.
+func CompileAllRecipes(ctx context.Context, pool *pgxpool.Pool, staleOnly bool) error {
+	var query string
+	if staleOnly {
+		query = "SELECT recipe_id FROM compiled_recipes WHERE is_stale = true ORDER BY compiled_at"
+	} else {
+		query = "SELECT id FROM recipes ORDER BY created_at"
+	}
+
+	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		return fmt.Errorf("list recipes: %w", err)
 	}

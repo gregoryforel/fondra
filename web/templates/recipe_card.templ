@@ -11,6 +11,7 @@ type RecipeCardData struct {
 	CaloriesPerServing float64
 	DietFlags          []string
 	Allergens          []string
+	Tags               []string
 	Servings           int
 }
 
@@ -43,6 +44,13 @@ templ RecipeCard(r RecipeCardData) {
 			<div class="badges allergen-badges">
 				for _, allergen := range r.Allergens {
 					<span class="badge badge-allergen">{ allergen }</span>
+				}
+			</div>
+		}
+		if len(r.Tags) > 0 {
+			<div class="badges tag-badges">
+				for _, tag := range r.Tags {
+					<span class="badge badge-tag">{ tag }</span>
 				}
 			</div>
 		}

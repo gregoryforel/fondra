@@ -47,6 +47,7 @@ type RecipeDetailData struct {
 	Slug               string
 	Description        string
 	Servings           int
+	YieldDescription   string
 	TotalActiveMinutes int
 	TotalPassiveMinutes int
 	Steps              []StepData
@@ -54,6 +55,7 @@ type RecipeDetailData struct {
 	Nutrition          NutritionData
 	DietFlags          []string
 	Allergens          []string
+	Tags               []string
 	UnitSystem         string
 }
 
@@ -86,6 +88,9 @@ templ RecipeDetail(data RecipeDetailData) {
 				}
 				<div class="recipe-meta">
 					<span>{ fmt.Sprintf("%d servings", data.Servings) }</span>
+					if data.YieldDescription != "" {
+						<span>{ fmt.Sprintf("Yields %s", data.YieldDescription) }</span>
+					}
 					<span>{ fmt.Sprintf("%dm active", data.TotalActiveMinutes) }</span>
 					if data.TotalPassiveMinutes > 0 {
 						<span>{ fmt.Sprintf("%dm passive", data.TotalPassiveMinutes) }</span>
@@ -103,6 +108,13 @@ templ RecipeDetail(data RecipeDetailData) {
 						<strong>Contains:</strong>
 						for _, allergen := range data.Allergens {
 							<span class="badge badge-allergen">{ allergen }</span>
+						}
+					</div>
+				}
+				if len(data.Tags) > 0 {
+					<div class="badges tag-badges">
+						for _, tag := range data.Tags {
+							<span class="badge badge-tag">{ tag }</span>
 						}
 					</div>
 				}

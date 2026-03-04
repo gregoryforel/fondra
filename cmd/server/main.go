@@ -46,7 +46,7 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("compiling all recipes...")
-		if err := domain.CompileAllRecipes(ctx, pool); err != nil {
+		if err := domain.CompileAllRecipes(ctx, pool, false); err != nil {
 			logger.Error("failed to compile recipes", "error", err)
 			os.Exit(1)
 		}
