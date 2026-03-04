@@ -34,19 +34,17 @@ func main() {
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		logger.Error("failed to connect to database", "error", err)
+		logger.Error("failed to create connection pool", "error", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
 
-	if err := pool.Ping(ctx); err != nil {
-		logger.Error("failed to ping database", "error", err)
-		os.Exit(1)
-	}
-	logger.Info("connected to database")
-
-	// Check if --compile-recipes flag is passed
+	// For compile-recipes, wait for DB synchronously before proceeding
 	if len(os.Args) > 1 && os.Args[1] == "compile-recipes" {
+		if err := waitForDB(ctx, pool, logger); err != nil {
+			logger.Error("database not ready", "error", err)
+			os.Exit(1)
+		}
 		logger.Info("compiling all recipes...")
 		if err := domain.CompileAllRecipes(ctx, pool); err != nil {
 			logger.Error("failed to compile recipes", "error", err)
@@ -55,6 +53,9 @@ func main() {
 		logger.Info("all recipes compiled successfully")
 		return
 	}
+
+	// For server mode, retry DB connection in background
+	go waitForDB(ctx, pool, logger)
 
 	h := handler.New(pool, logger)
 	mux := http.NewServeMux()
@@ -92,4 +93,21 @@ func main() {
 		logger.Error("server error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// waitForDB retries the database ping until it succeeds or the context is cancelled.
+func waitForDB(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
+	for i := 0; i < 30; i++ {
+		if err := pool.Ping(ctx); err == nil {
+			logger.Info("connected to database")
+			return nil
+		}
+		logger.Info("waiting for database...", "attempt", i+1)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("database not ready after 60 seconds")
 }

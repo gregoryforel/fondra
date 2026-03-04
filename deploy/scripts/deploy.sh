@@ -17,16 +17,16 @@ echo "=== Deploying Recipe Platform ==="
 echo "[1/4] Pulling latest code..."
 git pull origin main
 
-# Build and restart containers
-echo "[2/4] Building containers..."
-docker compose -f "$COMPOSE_FILE" build
+# Pull pre-built image from GHCR and restart
+echo "[2/4] Pulling container images..."
+docker compose -f "$COMPOSE_FILE" --env-file .env pull app
 
 echo "[3/4] Starting containers..."
-docker compose -f "$COMPOSE_FILE" up -d
+docker compose -f "$COMPOSE_FILE" --env-file .env up -d
 
 # Run migrations inside the app container
 echo "[4/4] Running migrations..."
-docker compose -f "$COMPOSE_FILE" exec -T app sh -c '
+docker compose -f "$COMPOSE_FILE" --env-file .env exec -T app sh -c '
     for f in /app/db/migrations/*_*.up.sql; do
         echo "  Applying $f..."
         PGPASSWORD="${POSTGRES_PASSWORD:-recipe}" psql -h postgres -U "${POSTGRES_USER:-recipe}" -d "${POSTGRES_DB:-recipe_platform}" -f "$f" 2>&1 || true
@@ -37,4 +37,4 @@ echo ""
 echo "=== Deployment complete ==="
 echo "Checking health..."
 sleep 3
-docker compose -f "$COMPOSE_FILE" exec -T app wget -qO- http://localhost:8080/health || echo "Warning: health check failed"
+docker compose -f "$COMPOSE_FILE" --env-file .env exec -T app wget -qO- http://localhost:8080/health || echo "Warning: health check failed"
