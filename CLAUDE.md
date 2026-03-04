@@ -63,11 +63,14 @@ make dev
 2. **templ for HTML.** Write `.templ` files in `/web/templates/`, run `make templ` to generate Go files.
 3. **htmx partials.** For dynamic updates, create a partial handler returning an HTML fragment and a full-page handler that wraps it in the layout.
 4. **Unit system.** Everything stored metric. Use `/internal/convert/` for display conversions. Never store US units in the database.
-5. **i18n ready.** The `translations` table exists. Currently English only. Future: `recipe_translations` table for per-recipe multilingual content.
+5. **i18n ready.** Per-entity translation tables exist (`recipe_translations`, `ingredient_translations`, `step_translations`). Currently English only.
+6. **Tags.** Recipes support tags via `tags` + `recipe_tags` tables. Categories: cuisine, meal_type, difficulty, course, technique, season. Compiled into `compiled_tags` text array.
+7. **Stale cascade.** A database trigger (`mark_ancestors_stale`) automatically marks a recipe and all its DAG ancestors as stale when sub-recipe data changes. Use `CompileAllRecipes(ctx, pool, true)` to recompile only stale recipes.
+8. **Explicit column lists.** Never use `SELECT cr.*` with positional scanning in handlers — always list columns explicitly to prevent breakage when columns are added.
 
 ## Schema Changes
 
-1. Write a new migration SQL file in `/db/migrations/` (numbered: `008_*.up.sql`)
+1. Write a new migration SQL file in `/db/migrations/` (numbered: `009_*.up.sql`)
 2. Run `make migrate`
 3. Update sqlc queries in `/db/sql/` if needed
 4. Run `make sqlc`

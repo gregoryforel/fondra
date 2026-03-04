@@ -147,9 +147,18 @@ func (h *Handler) listCompiledRecipes(ctx context.Context, limit, offset int, qu
 	var rows interface{ Next() bool }
 	var err error
 
+	const compiledRecipeCardCols = `
+			cr.recipe_id, cr.compiled_at, cr.is_stale,
+			cr.compiled_steps, cr.compiled_grocery_list,
+			cr.compiled_nutrition_per_serving, cr.compiled_nutrition_total,
+			cr.compiled_allergens, cr.compiled_diet_flags,
+			cr.total_active_seconds, cr.total_passive_seconds, cr.total_calories_per_serving,
+			cr.compiled_tags,
+			r.title, r.slug, r.description, r.servings`
+
 	if query != "" {
 		r, e := h.DB.Query(ctx, `
-			SELECT cr.*, r.title, r.slug, r.description, r.servings
+			SELECT `+compiledRecipeCardCols+`
 			FROM compiled_recipes cr
 			JOIN recipes r ON r.id = cr.recipe_id
 			WHERE r.visibility = 'public'
@@ -160,7 +169,7 @@ func (h *Handler) listCompiledRecipes(ctx context.Context, limit, offset int, qu
 		err = e
 	} else {
 		r, e := h.DB.Query(ctx, `
-			SELECT cr.*, r.title, r.slug, r.description, r.servings
+			SELECT `+compiledRecipeCardCols+`
 			FROM compiled_recipes cr
 			JOIN recipes r ON r.id = cr.recipe_id
 			WHERE r.visibility = 'public'
@@ -259,7 +268,13 @@ func (h *Handler) getRecipeDetail(ctx context.Context, slug, unitSystem string) 
 	)
 
 	err := h.DB.QueryRow(ctx, `
-		SELECT cr.*, r.title, r.slug, r.description, r.servings, r.yield_amount, r.yield_unit_id
+		SELECT cr.recipe_id, cr.compiled_at, cr.is_stale,
+		       cr.compiled_steps, cr.compiled_grocery_list,
+		       cr.compiled_nutrition_per_serving, cr.compiled_nutrition_total,
+		       cr.compiled_allergens, cr.compiled_diet_flags,
+		       cr.total_active_seconds, cr.total_passive_seconds, cr.total_calories_per_serving,
+		       cr.compiled_tags,
+		       r.title, r.slug, r.description, r.servings, r.yield_amount, r.yield_unit_id
 		FROM compiled_recipes cr
 		JOIN recipes r ON r.id = cr.recipe_id
 		WHERE r.slug = $1

@@ -463,8 +463,50 @@ func sumTiming(steps []CompiledStep) (int, int) {
 	return totalActive, totalPassive
 }
 
+// quantityToGrams converts a grocery item's quantity to grams for nutrition calculation.
+// Mass units: convert to base (grams) via to_base_factor.
+// Volume units: convert to base (ml) via to_base_factor, then ml→g via density.
+// Count/other: skip (no reliable conversion).
+func quantityToGrams(ctx context.Context, tx pgx.Tx, item GroceryItem) float64 {
+	var dimension string
+	var toBaseFactor float64
+	err := tx.QueryRow(ctx, `
+		SELECT u.dimension, u.to_base_factor
+		FROM units u
+		JOIN ingredients i ON i.default_unit_id = u.id
+		WHERE i.id = $1
+	`, item.IngredientID).Scan(&dimension, &toBaseFactor)
+	if err != nil {
+		// Fallback: assume grams if we can't determine the unit
+		return item.TotalQuantity
+	}
+
+	switch dimension {
+	case "mass":
+		// quantity is in default mass unit; convert to grams via base factor
+		return item.TotalQuantity * toBaseFactor
+	case "volume":
+		// quantity is in default volume unit; convert to ml, then to grams via density
+		ml := item.TotalQuantity * toBaseFactor
+		var density float64
+		err := tx.QueryRow(ctx, `
+			SELECT density_g_per_ml FROM ingredient_densities
+			WHERE ingredient_id = $1 AND notes IS NULL
+		`, item.IngredientID).Scan(&density)
+		if err != nil || density <= 0 {
+			// No density available; skip this ingredient for nutrition
+			return 0
+		}
+		return ml * density
+	default:
+		// count, temperature, etc. — no reliable gram conversion
+		return 0
+	}
+}
+
 // computeNutrition calculates total nutrition from the grocery list.
-// TODO: Implement real USDA-based calculation using ingredient_nutrients table.
+// Nutrient data is stored per 100g, so we convert each item's quantity
+// to grams first using the unit's dimension and density where needed.
 func computeNutrition(ctx context.Context, tx pgx.Tx, groceryList []GroceryItem) NutritionInfo {
 	nutrition := NutritionInfo{
 		Vitamins: make(map[string]float64),
@@ -472,6 +514,12 @@ func computeNutrition(ctx context.Context, tx pgx.Tx, groceryList []GroceryItem)
 	}
 
 	for _, item := range groceryList {
+		// Convert quantity to grams for nutrition lookup
+		grams := quantityToGrams(ctx, tx, item)
+		if grams <= 0 {
+			continue
+		}
+
 		// Query nutrient data for this ingredient
 		rows, err := tx.Query(ctx, `
 			SELECT n.name, n.unit, inu.amount_per_100g
@@ -483,8 +531,7 @@ func computeNutrition(ctx context.Context, tx pgx.Tx, groceryList []GroceryItem)
 			continue
 		}
 
-		// Calculate based on quantity (assumed grams for simplicity)
-		factor := item.TotalQuantity / 100.0
+		factor := grams / 100.0
 
 		for rows.Next() {
 			var name, unit string
