@@ -154,7 +154,7 @@ jobs:
           run_remote "
             cd /srv/recipes
             docker compose -f deploy/docker-compose.prod.yml --env-file .env down -v --remove-orphans 2>/dev/null || true
-            docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build
+            docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build || true
           "
 
           echo ""
@@ -162,8 +162,12 @@ jobs:
           sleep 20
 
           echo ""
+          echo "=== Container status ==="
+          run_remote "cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml --env-file .env ps -a" || true
+
+          echo ""
           echo "=== Container logs (app) ==="
-          run_remote "cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml --env-file .env logs app 2>&1 | tail -50" || true
+          run_remote "cd /srv/recipes && docker compose -f deploy/docker-compose.prod.yml --env-file .env logs app 2>&1 | tail -80" || true
 
           echo ""
           echo "=== Container logs (postgres) ==="
