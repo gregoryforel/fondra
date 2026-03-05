@@ -7,9 +7,9 @@
 		reverse_proxy app:8080
 	}
 
-	# Static assets — long cache, immutable
+	# Static assets — short cache so style changes propagate quickly after deploy
 	handle /static/* {
-		header Cache-Control "public, max-age=31536000, immutable"
+		header Cache-Control "public, max-age=300"
 		reverse_proxy app:8080
 	}
 
