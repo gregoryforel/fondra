@@ -1,17 +1,13 @@
 package templates
 
 import (
-	"os"
 	"strconv"
+	"time"
 )
 
-func styleSheetVersion() string {
-	info, err := os.Stat("web/static/style.css")
-	if err != nil {
-		return "1"
-	}
-	return strconv.FormatInt(info.ModTime().UnixNano(), 10)
-}
+var cssVersion = strconv.FormatInt(time.Now().UnixNano(), 10)
+
+func styleSheetVersion() string { return cssVersion }
 
 templ Layout(title string) {
 	<!DOCTYPE html>
