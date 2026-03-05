@@ -24,9 +24,6 @@ docker compose -f "$COMPOSE_FILE" --env-file .env pull app
 echo "[3/4] Starting containers..."
 docker compose -f "$COMPOSE_FILE" --env-file .env up -d
 
-echo "      Restarting Caddy to reload config..."
-docker compose -f "$COMPOSE_FILE" --env-file .env restart caddy
-
 # Run migrations inside the app container
 echo "[4/4] Running migrations..."
 docker compose -f "$COMPOSE_FILE" --env-file .env exec -T app sh -c '
