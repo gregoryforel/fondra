@@ -76,8 +76,11 @@ jobs:
           $SSH "\
             echo '${{ secrets.GHCR_PAT }}' | docker login ghcr.io -u gregoryforel --password-stdin && \
             cd /srv/recipes && \
+            git fetch origin main && \
+            git checkout -f ${{ github.sha }} && \
             $COMPOSE pull app && \
             $COMPOSE up -d && \
+            $COMPOSE restart caddy && \
             sleep 5 && \
             $COMPOSE exec -T app sh -c '\
               for f in /app/db/migrations/*_*.up.sql; do \
